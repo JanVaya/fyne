@@ -3,6 +3,7 @@ package widget
 import (
 	"math"
 	"strconv"
+	"sync"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
@@ -91,6 +92,7 @@ type Table struct {
 	focused                   bool
 	selectedCell, hoveredCell *TableCellID
 	cells                     *tableCells
+	mapHeightWidthLock        sync.Mutex		// Used to avoid cuncurrent access to the following maps
 	columnWidths, rowHeights  map[int]float32
 	moveCallback              func()
 	offset                    fyne.Position
@@ -138,6 +140,8 @@ func (t *Table) CreateRenderer() fyne.WidgetRenderer {
 
 	t.propertyLock.Lock()
 	t.headerSize = t.createHeader().MinSize()
+
+	t.mapHeightWidthLock.Lock()
 	if t.columnWidths != nil {
 		if v, ok := t.columnWidths[-1]; ok {
 			t.headerSize.Width = v
@@ -148,6 +152,8 @@ func (t *Table) CreateRenderer() fyne.WidgetRenderer {
 			t.headerSize.Height = v
 		}
 	}
+	t.mapHeightWidthLock.Unlock()
+
 	t.cellSize = t.templateSize()
 	t.cells = newTableCells(t)
 	t.content = widget.NewScroll(t.cells)
@@ -300,11 +306,14 @@ func (t *Table) SetColumnWidth(id int, width float32) {
 		t.headerSize.Width = width
 	}
 
+	t.mapHeightWidthLock.Lock()
 	if t.columnWidths == nil {
 		t.columnWidths = make(map[int]float32)
 	}
 
 	t.columnWidths[id] = width
+	t.mapHeightWidthLock.Unlock()
+
 	t.propertyLock.Unlock()
 
 	t.Refresh()
@@ -321,11 +330,13 @@ func (t *Table) SetRowHeight(id int, height float32) {
 		t.headerSize.Height = height
 	}
 
+	t.mapHeightWidthLock.Lock()
 	if t.rowHeights == nil {
 		t.rowHeights = make(map[int]float32)
 	}
-
 	t.rowHeights[id] = height
+	t.mapHeightWidthLock.Unlock()
+
 	t.propertyLock.Unlock()
 
 	t.Refresh()
@@ -646,9 +657,12 @@ func (t *Table) findX(col int) (cellX float32, cellWidth float32) {
 		}
 
 		width := cellSize.Width
+		t.mapHeightWidthLock.Lock()
 		if w, ok := t.columnWidths[i]; ok {
 			width = w
 		}
+		t.mapHeightWidthLock.Unlock()
+
 		cellWidth = width
 	}
 	return
@@ -663,9 +677,14 @@ func (t *Table) findY(row int) (cellY float32, cellHeight float32) {
 		}
 
 		height := cellSize.Height
+
+		t.mapHeightWidthLock.Lock()
+
 		if h, ok := t.rowHeights[i]; ok {
 			height = h
 		}
+		t.mapHeightWidthLock.Unlock()
+
 		cellHeight = height
 	}
 	return
@@ -763,7 +782,9 @@ func (t *Table) tapped(pos fyne.Position) {
 		if t.hoverHeaderRow != noCellMatch {
 			t.dragCol = noCellMatch
 			t.dragRow = t.hoverHeaderRow
+			t.mapHeightWidthLock.Lock()
 			size, ok := t.rowHeights[t.hoverHeaderRow]
+			t.mapHeightWidthLock.Unlock()
 			if !ok {
 				size = t.cellSize.Height
 			}
@@ -771,7 +792,11 @@ func (t *Table) tapped(pos fyne.Position) {
 		} else if t.hoverHeaderCol != noCellMatch {
 			t.dragCol = t.hoverHeaderCol
 			t.dragRow = noCellMatch
+
+			t.mapHeightWidthLock.Lock()
 			size, ok := t.columnWidths[t.hoverHeaderCol]
+			t.mapHeightWidthLock.Unlock()
+
 			if !ok {
 				size = t.cellSize.Width
 			}
@@ -827,19 +852,23 @@ func (t *Table) stickyColumnWidths(colWidth float32, cols int) (visible []float3
 
 	visible = make([]float32, max)
 
+	t.mapHeightWidthLock.Lock()
 	if len(t.columnWidths) == 0 {
 		for i := 0; i < max; i++ {
 			visible[i] = colWidth
 		}
 		return
 	}
+	t.mapHeightWidthLock.Unlock()
 
 	for i := 0; i < max; i++ {
 		height := colWidth
 
+		t.mapHeightWidthLock.Lock()
 		if h, ok := t.columnWidths[i]; ok {
 			height = h
 		}
+		t.mapHeightWidthLock.Unlock()
 
 		visible[i] = height
 	}
@@ -860,7 +889,11 @@ func (t *Table) visibleColumnWidths(colWidth float32, cols int) (visible map[int
 	stick := t.StickyColumnCount
 	size := t.size.Load()
 
-	if len(t.columnWidths) == 0 {
+	t.mapHeightWidthLock.Lock()
+	savedLen := len(t.columnWidths)
+	t.mapHeightWidthLock.Unlock()
+
+	if savedLen == 0 {
 		paddedWidth := colWidth + padding
 
 		offX = float32(math.Floor(float64(t.offset.X/paddedWidth))) * paddedWidth
@@ -890,9 +923,11 @@ func (t *Table) visibleColumnWidths(colWidth float32, cols int) (visible map[int
 
 	for i := 0; i < cols; i++ {
 		width := colWidth
+		t.mapHeightWidthLock.Lock()
 		if w, ok := t.columnWidths[i]; ok {
 			width = w
 		}
+		t.mapHeightWidthLock.Unlock()
 
 		if colOffset <= t.offset.X-width-padding {
 			// before visible content
@@ -927,7 +962,11 @@ func (t *Table) stickyRowHeights(rowHeight float32, rows int) (visible []float32
 
 	visible = make([]float32, max)
 
-	if len(t.rowHeights) == 0 {
+	t.mapHeightWidthLock.Lock()
+	savedLen := len(t.rowHeights)
+	t.mapHeightWidthLock.Unlock()
+
+	if savedLen == 0 {
 		for i := 0; i < max; i++ {
 			visible[i] = rowHeight
 		}
@@ -937,9 +976,11 @@ func (t *Table) stickyRowHeights(rowHeight float32, rows int) (visible []float32
 	for i := 0; i < max; i++ {
 		height := rowHeight
 
+		t.mapHeightWidthLock.Lock()
 		if h, ok := t.rowHeights[i]; ok {
 			height = h
 		}
+		t.mapHeightWidthLock.Unlock()
 
 		visible[i] = height
 	}
@@ -960,7 +1001,11 @@ func (t *Table) visibleRowHeights(rowHeight float32, rows int) (visible map[int]
 	stick := t.StickyRowCount
 	size := t.size.Load()
 
-	if len(t.rowHeights) == 0 {
+	t.mapHeightWidthLock.Lock()
+	savedLen := len(t.rowHeights)
+	t.mapHeightWidthLock.Unlock()
+
+	if savedLen == 0 {
 		paddedHeight := rowHeight + padding
 
 		offY = float32(math.Floor(float64(t.offset.Y/paddedHeight))) * paddedHeight
@@ -990,9 +1035,11 @@ func (t *Table) visibleRowHeights(rowHeight float32, rows int) (visible map[int]
 
 	for i := 0; i < rows; i++ {
 		height := rowHeight
+		t.mapHeightWidthLock.Lock()
 		if h, ok := t.rowHeights[i]; ok {
 			height = h
 		}
+		t.mapHeightWidthLock.Unlock()
 
 		if rowOffset <= t.offset.Y-height-padding {
 			// before visible content
@@ -1069,9 +1116,11 @@ func (t *tableRenderer) MinSize() fyne.Size {
 	if t.t.StickyRowCount > 0 {
 		for i := 0; i < t.t.StickyRowCount; i++ {
 			height := t.t.cellSize.Height
+			t.t.mapHeightWidthLock.Lock()
 			if h, ok := t.t.rowHeights[i]; ok {
 				height = h
 			}
+			t.t.mapHeightWidthLock.Unlock()
 
 			min.Height += height + sep
 		}
@@ -1079,9 +1128,11 @@ func (t *tableRenderer) MinSize() fyne.Size {
 	if t.t.StickyColumnCount > 0 {
 		for i := 0; i < t.t.StickyColumnCount; i++ {
 			width := t.t.cellSize.Width
+			t.t.mapHeightWidthLock.Lock()
 			if w, ok := t.t.columnWidths[i]; ok {
 				width = w
 			}
+			t.t.mapHeightWidthLock.Unlock()
 
 			min.Width += width + sep
 		}
@@ -1093,6 +1144,8 @@ func (t *tableRenderer) Refresh() {
 	th := t.t.Theme()
 	t.t.propertyLock.Lock()
 	t.t.headerSize = t.t.createHeader().MinSize()
+
+	t.t.mapHeightWidthLock.Lock()
 	if t.t.columnWidths != nil {
 		if v, ok := t.t.columnWidths[-1]; ok {
 			t.t.headerSize.Width = v
@@ -1103,6 +1156,8 @@ func (t *tableRenderer) Refresh() {
 			t.t.headerSize.Height = v
 		}
 	}
+	t.t.mapHeightWidthLock.Unlock()
+
 	t.t.cellSize = t.t.templateSize()
 	t.calculateHeaderSizes(th)
 	t.t.propertyLock.Unlock()
@@ -1210,12 +1265,18 @@ func (r *tableCellsRenderer) MinSize() fyne.Size {
 	stickCols := r.cells.t.StickyColumnCount
 
 	width := float32(0)
-	if len(r.cells.t.columnWidths) == 0 {
+	r.cells.t.mapHeightWidthLock.Lock()
+	savedLen := len(r.cells.t.columnWidths)
+	r.cells.t.mapHeightWidthLock.Unlock()
+
+	if savedLen == 0 {
 		width = r.cells.t.cellSize.Width * float32(cols-stickCols)
 	} else {
 		cellWidth := r.cells.t.cellSize.Width
 		for col := stickCols; col < cols; col++ {
+			r.cells.t.mapHeightWidthLock.Lock()
 			colWidth, ok := r.cells.t.columnWidths[col]
+			r.cells.t.mapHeightWidthLock.Unlock()
 			if ok {
 				width += colWidth
 			} else {
@@ -1225,12 +1286,18 @@ func (r *tableCellsRenderer) MinSize() fyne.Size {
 	}
 
 	height := float32(0)
-	if len(r.cells.t.rowHeights) == 0 {
+	r.cells.t.mapHeightWidthLock.Lock()
+	savedLen = len(r.cells.t.rowHeights)
+	r.cells.t.mapHeightWidthLock.Unlock()
+
+	if savedLen == 0 {
 		height = r.cells.t.cellSize.Height * float32(rows-stickRows)
 	} else {
 		cellHeight := r.cells.t.cellSize.Height
 		for row := stickRows; row < rows; row++ {
+			r.cells.t.mapHeightWidthLock.Lock()
 			rowHeight, ok := r.cells.t.rowHeights[row]
+			r.cells.t.mapHeightWidthLock.Unlock()
 			if ok {
 				height += rowHeight
 			} else {
